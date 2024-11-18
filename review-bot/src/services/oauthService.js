@@ -3,97 +3,121 @@ import { logService } from './LogService';
 
 class OAuthService {
   constructor() {
-    this.state = crypto.randomUUID();
-    this.popupWindow = null;
+    this.stateKey = 'oauth_state';
+  }
+
+  generateState() {
+    const state = crypto.randomUUID();
+    sessionStorage.setItem(this.stateKey, state);
+    return state;
   }
 
   async initiateAuth(platform) {
     try {
       if (platform === 'yandex') {
-        // Для Яндекса используем OAuth
         const config = oauthConfig[platform];
-        localStorage.setItem('oauth_state', this.state);
-        
+        const state = this.generateState();
+
+        // Формируем URL с правильными параметрами
         const params = new URLSearchParams({
+          response_type: 'code',
           client_id: config.clientId,
           redirect_uri: config.redirectUri,
           scope: config.scope,
-          response_type: 'code',
-          state: this.state
+          state: state,
+          force_confirm: 'yes',
+          display: 'popup'
         });
 
-        window.location.href = `${config.authUrl}?${params.toString()}`;
-      } else {
-        // Для 2GIS и Flamp открываем окно авторизации
-        const config = oauthConfig[platform];
-        const width = 600;
-        const height = 600;
-        const left = window.screen.width / 2 - width / 2;
-        const top = window.screen.height / 2 - height / 2;
-
-        this.popupWindow = window.open(
-          config.loginUrl,
-          `${platform}_auth`,
-          `width=${width},height=${height},left=${left},top=${top}`
-        );
-
-        // Слушаем сообщения от окна
-        window.addEventListener('message', this.handlePopupMessage.bind(this), false);
-
-        await logService.info('manual_auth_initiated', {
+        await logService.info('oauth_initiate', {
           platform,
-          loginUrl: config.loginUrl
+          redirectUri: config.redirectUri,
+          scope: config.scope
         });
+
+        // Логируем URL для отладки
+        const authUrl = `${config.authUrl}?${params}`;
+        console.log('Auth URL:', authUrl);
+
+        window.location.href = authUrl;
+      } else {
+        // Логика для других платформ...
+        const config = oauthConfig[platform];
+        window.location.href = config.loginUrl;
       }
     } catch (error) {
-      await logService.error('auth_initiate_error', {
+      await logService.error('oauth_initiate_error', {
         platform,
-        error: error.message
+        error: error.message,
+        stack: error.stack
       });
       throw error;
     }
-  }
-
-  handlePopupMessage(event) {
-    // В реальном приложении нужно проверять origin
-    if (this.popupWindow && event.data.type === 'AUTH_SUCCESS') {
-      this.popupWindow.close();
-      this.popupWindow = null;
-      window.removeEventListener('message', this.handlePopupMessage);
-      
-      // Здесь можно обработать успешную авторизацию
-      window.location.reload();
-    }
-  }
-
-  goToBusinessPanel(platform) {
-    const config = oauthConfig[platform];
-    window.open(config.businessUrl, '_blank');
   }
 
   async handleCallback(platform, code, state) {
     try {
       if (platform === 'yandex') {
-        const savedState = localStorage.getItem('oauth_state');
-        if (state !== savedState) {
-          throw new Error('Недействительный state token');
+        const savedState = sessionStorage.getItem(this.stateKey);
+        
+        // Подробная проверка state
+        if (!state || !savedState) {
+          throw new Error('Отсутствует state token');
         }
-        localStorage.removeItem('oauth_state');
+        
+        if (state !== savedState) {
+          throw new Error('Некорректный state token');
+        }
+
+        sessionStorage.removeItem(this.stateKey);
+
+        if (!code) {
+          throw new Error('Отсутствует код авторизации');
+        }
+
+        // Логируем успешный callback
+        await logService.info('oauth_callback_success', {
+          platform,
+          hasCode: true
+        });
+
+        // В реальном приложении здесь будет обмен кода на токен
+        return {
+          success: true,
+          platform,
+          code
+        };
       }
-
-      await logService.info('auth_callback_received', {
-        platform,
-        hasCode: Boolean(code)
-      });
-
-      return true;
     } catch (error) {
-      await logService.error('auth_callback_error', {
+      await logService.error('oauth_callback_error', {
         platform,
-        error: error.message
+        error: error.message,
+        stack: error.stack
       });
       throw error;
     }
+  }
+
+  // Вспомогательные методы для работы с токенами
+  saveToken(platform, token) {
+    localStorage.setItem(`${platform}_token`, token);
+  }
+
+  getToken(platform) {
+    return localStorage.getItem(`${platform}_token`);
+  }
+
+  removeToken(platform) {
+    localStorage.removeItem(`${platform}_token`);
+  }
+
+  isAuthenticated(platform) {
+    return Boolean(this.getToken(platform));
+  }
+
+  clearAuth(platform) {
+    this.removeToken(platform);
+    sessionStorage.removeItem(this.stateKey);
   }
 }
 
